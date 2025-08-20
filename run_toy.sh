@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --account=project_465000131
-#SBATCH --partition=debug
+#SBATCH --account=project_462000131
+#SBATCH --partition=small
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=1G
@@ -12,5 +12,6 @@ module load pytorch/2.5
 source /scratch/${SLURM_JOB_ACCOUNT}/${USER}/PDLd3/pvenv/bin/activate
 export MLFLOW_TRACKING_URI=/scratch/${SLURM_JOB_ACCOUNT}/${USER}/PDLd3/mlruns
 
+mkdir -p /tmp/pcheckpoints
 srun python toy.py
-mv /tmp/pcheckpoints .
+rsync -a /tmp/pcheckpoints .
