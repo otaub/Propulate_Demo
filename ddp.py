@@ -10,16 +10,17 @@ from mpi4py import MPI
 from torch import nn, optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision.datasets import MNIST
+import mlflow
 
 from propulate import Islands
 from propulate.utils import get_default_propagator
 
-from utils import get_dataloaders
+from ddp_utils import get_dataloaders
 
 GPUS_PER_NODE = int(os.environ["SLURM_GPUS_PER_NODE"])
 NUM_WORKERS = int(os.environ["SLURM_CPUS_PER_TASK"])
 SUBGROUP_COMM_METHOD = "nccl-slurm"
-checkpoint_path = "./pcheckpoints"
+checkpoint_path = "./ddp_pcheckpoints"
 dataset_path = f"/scratch/{os.environ['SLURM_JOB_ACCOUNT']}/{os.environ['USER']}/mnist"
 num_generations = 100
 num_islands = 2
@@ -36,7 +37,7 @@ limits = {
     "batch_size": ("1", "2", "4", "8", "16", "32", "64", "128"),
 }
 
-num_epochs = 32
+num_epochs = 20
 # NOTE map categorical variable to python objects
 activations = {
     "relu": nn.ReLU,
@@ -262,43 +263,49 @@ def loss_fn(params, subgroup_comm):
             print("Hit early stopping count, breaking.")
             break
 
-        # ------------ Scheduler step ------------
         scheduler.step()
         set_new_best = False
 
     # Return best validation loss as an individual's loss (trained so lower is better).
     dist.destroy_process_group()
+
+    if subgroup_comm.rank == 0:
+        mlflow.set_experiment("ddp_experiment")
+        with mlflow.start_run(run_name=f"run_{params.island}_{params.rank}_{params.generation}"):
+            mlflow.log_params(params)
+            mlflow.log_param("generation", params.generation)
+            mlflow.log_metric("accuracy", best_val_loss)
+
     return best_val_loss
 
 
 if __name__ == "__main__":
     comm = MPI.COMM_WORLD
-    if comm.rank == 0:  # Download data at the top, then we don't need to later.
+    if comm.rank == 0:
         MNIST(download=True, root=".", transform=None, train=True)
         MNIST(download=True, root=".", transform=None, train=False)
     comm.Barrier()
-    pop_size = 2 * comm.size  # Breeding population size
-    rng = random.Random(seed + comm.rank)  # Set up separate random number generator for evolutionary optimizer.
+    pop_size = 2 * comm.size
+    rng = random.Random(seed + comm.rank)
 
-    propagator = get_default_propagator(  # Get default evolutionary operator.
-        pop_size=pop_size,  # Breeding population size
-        limits=limits,  # Search space
-        rng=rng,  # Separate random number generator for Propulate optimization
+    propagator = get_default_propagator(
+        pop_size=pop_size,
+        limits=limits,
+        rng=rng,
     )
 
     # Set up island model.
     islands = Islands(
-        loss_fn=loss_fn,  # Loss function to be minimized
-        propagator=propagator,  # Propagator, i.e., evolutionary operator to be used
-        rng=rng,  # Separate random number generator for Propulate optimization
-        generations=num_generations,  # Overall number of generations
-        num_islands=num_islands,  # Number of islands
-        migration_probability=migration_prob,  # Migration probability
-        pollination=pollination,  # Whether to use pollination or migration
-        checkpoint_path=checkpoint_path,  # Checkpoint path
+        loss_fn=loss_fn,
+        propagator=propagator,
+        rng=rng,
+        generations=num_generations,
+        num_islands=num_islands,
+        migration_probability=migration_prob,
+        pollination=pollination,
+        checkpoint_path=checkpoint_path,
         # ----- SPECIFIC FOR MULTI-RANK UCS -----
         ranks_per_worker=2,  # Number of ranks per (multi rank) worker
     )
 
-    # Run actual optimization.
     islands.propulate()

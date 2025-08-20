@@ -5,14 +5,15 @@ from mpi4py import MPI
 import torch
 from torch import nn
 from torchvision.datasets import MNIST
+import mlflow
 
 import propulate
 
-from utils import get_dataloaders
+from nas_utils import get_dataloaders
 
 
 NUM_WORKERS = int(os.environ["SLURM_CPUS_PER_TASK"])
-checkpoint_path = "./"
+checkpoint_path = os.environ["CHECKPOINT_TMP"]
 dataset_path = f"/scratch/{os.environ['SLURM_JOB_ACCOUNT']}/{os.environ['USER']}/mnist"
 device = torch.device(f"cuda:{os.environ['LOCAL_RANK']}")
 num_generations = 100
@@ -29,7 +30,7 @@ limits = {
     "batch_size": ("1", "2", "4", "8", "16", "32", "64", "128"),
 }
 
-num_epochs = 32
+num_epochs = 20
 # NOTE map categorical variable to python objects
 activations = {
     "relu": nn.ReLU,
@@ -111,6 +112,12 @@ def loss_fn(params):
                 acc = correct/total
             if  -acc < best:
                 best = -acc
+
+    mlflow.set_experiment("nas_experiment")
+    with mlflow.start_run(run_name=f"run_{params.island}_{params.rank}_{params.generation}"):
+        mlflow.log_params(params)
+        mlflow.log_param("generation", params.generation)
+        mlflow.log_metric("accuracy", -best)
 
     # NOTE smaller is better
     return best
